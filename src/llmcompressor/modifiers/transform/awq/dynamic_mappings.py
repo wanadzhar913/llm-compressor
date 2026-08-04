@@ -146,20 +146,20 @@ def build_hybrid_attention_mappings(model: Module) -> list[AWQMapping] | None:
     return mappings
 
 
-def build_step3p5_mappings(model: Module) -> list[AWQMapping] | None:
+def build_step3_mappings(model: Module) -> list[AWQMapping] | None:
     """
-    Dynamically build AWQ mappings for Step3p5 models.
+    Dynamically build AWQ mappings for Step3 text-stack models.
 
-    Step-3.5-Flash uses dense FFN layers early in the stack and MoE FFN layers
-    later in the stack. The dense and MoE post-attention mappings must be
-    layer-index-specific so AWQ only groups each norm with balance layers that
-    exist in the same decoder layer.
+    Step-3.5-Flash and Step-3.7-Flash use dense FFN layers early in the stack
+    and MoE FFN layers later in the stack. The dense and MoE post-attention
+    mappings must be layer-index-specific so AWQ only groups each norm with
+    balance layers that exist in the same decoder layer.
     """
-    dense_indices, moe_indices = _detect_step3p5_ffn_layer_indices(model)
+    dense_indices, moe_indices = _detect_step3_ffn_layer_indices(model)
 
     if not dense_indices and not moe_indices:
         logger.warning(
-            "Step3p5 model detected but dense/MoE FFN layer indices could not be "
+            "Step3 model detected but dense/MoE FFN layer indices could not be "
             "inferred. Falling back."
         )
         return None
@@ -196,8 +196,12 @@ def build_step3p5_mappings(model: Module) -> list[AWQMapping] | None:
                 f"re:.*layers\\.({moe_re})\\.post_attention_layernorm$",
                 [
                     "re:.*moe.gate$",
+                    # Packed remote-code MoELinear experts
                     "re:.*moe.gate_proj$",
                     "re:.*moe.up_proj$",
+                    # Linearized routed experts
+                    "re:.*moe\\.[0-9]+\\.gate_proj$",
+                    "re:.*moe\\.[0-9]+\\.up_proj$",
                     "re:.*share_expert.gate_proj$",
                     "re:.*share_expert.up_proj$",
                 ],
@@ -205,16 +209,17 @@ def build_step3p5_mappings(model: Module) -> list[AWQMapping] | None:
         )
 
     # The packed moe.up_proj -> moe.down_proj path is intentionally excluded
-    # because AWQ's smooth-layer update assumes a 1D/2D smooth weight.
+    # because AWQ's smooth-layer update assumes a 1D/2D smooth weight. If the
+    # MoE has been linearized, the routed expert up/down path is safe to include.
     mappings.append(
         AWQMapping(
-            "re:.*(mlp|share_expert).up_proj$",
-            ["re:.*(mlp|share_expert).down_proj$"],
+            "re:.*(mlp|share_expert|moe\\.[0-9]+).up_proj$",
+            ["re:.*(mlp|share_expert|moe\\.[0-9]+).down_proj$"],
         )
     )
 
     logger.info(
-        f"Built dynamic Step3p5 AWQ mappings: "
+        f"Built dynamic Step3 AWQ mappings: "
         f"{len(dense_indices)} dense layers, {len(moe_indices)} MoE layers"
     )
 
@@ -227,7 +232,8 @@ AWQ_DYNAMIC_MAPPING_REGISTRY: dict[str, Callable[[Module], list[AWQMapping] | No
     "Qwen3_5ForConditionalGeneration": build_hybrid_attention_mappings,
     "Qwen3_5MoeForCausalLM": build_hybrid_attention_mappings,
     "Qwen3_5MoeForConditionalGeneration": build_hybrid_attention_mappings,
-    "Step3p5ForCausalLM": build_step3p5_mappings,
+    "Step3p5ForCausalLM": build_step3_mappings,
+    "Step3p7ForConditionalGeneration": build_step3_mappings,
 }
 
 
@@ -253,20 +259,20 @@ def _detect_linear_attn_projections(model: Module) -> list[str]:
     return list(dict.fromkeys(proj_names))
 
 
-_STEP3P5_FFN_LAYER_PATTERN = re.compile(
+_STEP3_FFN_LAYER_PATTERN = re.compile(
     r"(?:^|\.)layers\.(?P<idx>\d+)\.(?P<ffn>mlp|moe|share_expert)(?:\.|$)"
 )
 
 
-def _detect_step3p5_ffn_layer_indices(model: Module) -> tuple[list[int], list[int]]:
+def _detect_step3_ffn_layer_indices(model: Module) -> tuple[list[int], list[int]]:
     """
-    Detect which Step3p5 decoder layers use dense MLPs and which use MoE blocks.
+    Detect which Step3 decoder layers use dense MLPs and which use MoE blocks.
     """
     dense_indices: set[int] = set()
     moe_indices: set[int] = set()
 
     for name, _ in model.named_modules():
-        match = _STEP3P5_FFN_LAYER_PATTERN.search(name)
+        match = _STEP3_FFN_LAYER_PATTERN.search(name)
         if match is None:
             continue
 

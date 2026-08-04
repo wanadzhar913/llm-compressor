@@ -163,7 +163,10 @@ class LinearExperts2D(torch.nn.ModuleList):
     ) -> type["LinearExperts2D"]:
         from .granitemoe import GraniteMoeLinearExperts  # noqa: F401
         from .llama4 import Llama4LinearExperts  # noqa: F401
+        from .step3 import Step3LinearMoE
 
+        if key.__name__ in ("Step3p5MoEMLP", "Step3p7MoEMLP"):
+            return Step3LinearMoE
         return cls._registry.get(key, default)
 
     @classmethod

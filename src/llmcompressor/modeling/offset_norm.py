@@ -59,6 +59,8 @@ class NormCalibrationModule(ABC, torch.nn.Module, RegistryMixin):
         "Qwen3NextRMSNorm",
         "Qwen3_5RMSNorm",
         "Qwen3_5MoeRMSNorm",
+        "Step3p5RMSNorm",
+        "Step3p7RMSNorm",
     ],
 )
 class CalibrationOffsetNorm(NormCalibrationModule):
@@ -74,7 +76,7 @@ class CalibrationOffsetNorm(NormCalibrationModule):
 
     def __init__(self, original: torch.nn.Module, config):
         super().__init__()
-        self.eps = original.eps
+        self.eps = _get_norm_eps(original)
         self._orig_dtype = original.weight.dtype
         self.weight = torch.nn.Parameter(
             (1.0 + original.weight.data.float()).to(original.weight.dtype)
@@ -153,4 +155,15 @@ def _is_registered(name: str, subclass: RegistryMixin):
     lookup = standardize_lookup_name(name)
     return (
         lookup in subclass.registered_names() or lookup in subclass.registered_aliases()
+    )
+
+
+def _get_norm_eps(module: torch.nn.Module):
+    if hasattr(module, "eps"):
+        return module.eps
+    if hasattr(module, "variance_epsilon"):
+        return module.variance_epsilon
+    raise AttributeError(
+        f"Cannot resolve norm epsilon on {module.__class__.__name__}; "
+        "expected `eps` or `variance_epsilon`"
     )
